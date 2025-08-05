@@ -8,7 +8,7 @@ target = "javascript"
 # your project to the Hex package manager.
 #
 description = "Drag and Drop library for gleam / lustre"
-licences = ["MIT"]
+licences = ["BSD-3"]
 repository = { type = "sourcehut", user = "tpjg", repo = "dnd" }
 links = [{ title = "Sources", href = "https://git.sr.ht/~tpjg/dnd" }]
 #
