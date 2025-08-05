@@ -17,11 +17,56 @@ pub type Movement {
   Vertical
 }
 
+/// Determines when list modifications should be applied during drag operations.
+///
+/// This controls the timing of when your list gets updated - either continuously
+/// while dragging for real-time visual feedback, or only when the item is dropped
+/// for final placement.
+///
+/// ## Variants
+///
+/// - `OnDrag`: Apply list changes immediately as the item is dragged over drop targets.
+///   Provides real-time visual feedback but triggers more frequent updates.
+/// - `OnDrop`: Apply list changes only when the drag operation completes.
+///   More performant for complex lists but less visual feedback during dragging.
+///
+/// ## Use Cases
+///
+/// - **OnDrag**: Best for simple lists where you want immediate visual feedback
+/// - **OnDrop**: Better for performance-sensitive applications or when you need to validate the drop
+///
+/// ## Example
+///
+/// ```gleam
+/// // Real-time updates while dragging
+/// let live_config = dnd.Config(
+///   listen: dnd.OnDrag,
+///   // ... other options
+/// )
+///
+/// // Updates only on final drop
+/// let batch_config = dnd.Config(
+///   listen: dnd.OnDrop,
+///   // ... other options
+/// )
+/// ```
 pub type Listen {
   OnDrag
   OnDrop
 }
 
+/// Defines how the list should be modified when an item is dragged and dropped.
+///
+/// Each operation provides a different way of rearranging items in the list,
+/// affecting how the dragged item and other items are repositioned.
+///
+/// ## Variants
+///
+/// - `InsertAfter`: Move the dragged item to the position immediately after the drop target
+/// - `InsertBefore`: Move the dragged item to the position immediately before the drop target
+/// - `Rotate`: Perform a circular shift of all items between the drag and drop positions (includes both endpoints)
+/// - `Swap`: Exchange the positions of the dragged item and the drop target item
+/// - `Unaltered`: Do not modify the list (useful for custom logic or visual feedback only)
 pub type Operation {
   InsertAfter
   InsertBefore
@@ -30,6 +75,30 @@ pub type Operation {
   Unaltered
 }
 
+/// Configuration for drag-and-drop behavior.
+///
+/// This type defines how the drag-and-drop system should behave, including
+/// when to apply changes, how items should move, and what operation to perform.
+///
+/// ## Fields
+///
+/// - `before_update`: A callback function that allows you to modify the list
+///   before the drag-and-drop operation is applied. Receives the drag index,
+///   drop index, and the updated list. Return the final list to use.
+/// - `movement`: Constrains how the ghost element can move (Free, Horizontal, or Vertical)
+/// - `listen`: When to apply list changes (OnDrag for real-time updates, OnDrop for final placement)
+/// - `operation`: What list operation to perform (InsertAfter, InsertBefore, Rotate, Swap, or Unaltered)
+///
+/// ## Example
+///
+/// ```gleam
+/// let config = dnd.Config(
+///   before_update: fn(_, _, list) { list },  // No pre-processing
+///   movement: dnd.Free,                      // Allow movement in any direction
+///   listen: dnd.OnDrag,                      // Update while dragging
+///   operation: dnd.Rotate,                   // Rotate items between positions
+/// )
+/// ```
 pub type Config(a) {
   Config(
     before_update: fn(Int, Int, List(a)) -> List(a),
@@ -55,6 +124,45 @@ pub type Model {
   Model(Option(State))
 }
 
+/// Information about the current drag operation when an item is being dragged.
+///
+/// This type provides access to all relevant details about an active drag operation,
+/// including positions, indices, and element identifiers. Use `system.info(model)`
+/// to extract this information when a drag is in progress.
+///
+/// ## Fields
+///
+/// - `drag_index`: List index of the item being dragged (original position)
+/// - `drop_index`: List index of the current drop target (where it would be placed)
+/// - `drag_element_id`: DOM element ID of the dragged item
+/// - `drop_element_id`: DOM element ID of the current drop target
+/// - `start_position`: Mouse coordinates where the drag began
+/// - `current_position`: Current mouse coordinates during drag
+///
+/// ## Usage
+///
+/// ```gleam
+/// // Check if currently dragging and get info
+/// case model.system.info(model.system.model) {
+///   Some(info) -> {
+///     // Currently dragging - can use info for styling, ghost positioning, etc.
+///     html.div([
+///       attribute.style("transform", "translate("
+///         <> float.to_string(info.current_position.x) <> "px, "
+///         <> float.to_string(info.current_position.y) <> "px)")
+///     ], [html.text("Ghost element")])
+///   }
+///   None -> {
+///     // Not currently dragging
+///     html.text("")
+///   }
+/// }
+/// ```
+///
+/// ## Availability
+///
+/// This information is only available during active drag operations (returns `Some(Info)`).
+/// When no drag is in progress, `system.info()` returns `None`.
 pub type Info {
   Info(
     drag_index: Int,
@@ -66,6 +174,43 @@ pub type Info {
   )
 }
 
+/// The main drag-and-drop system containing all necessary functions and state.
+///
+/// This type encapsulates the complete drag-and-drop functionality and provides
+/// the interface between your application and the drag-and-drop behavior.
+/// Create it using `dnd.create()` and integrate it into your Lustre application.
+///
+/// ## Type Parameters
+///
+/// - `a`: The type of items in your draggable list
+/// - `msg`: Your application's message type
+///
+/// ## Fields
+///
+/// - `model`: Internal drag state (opaque - use `info()` to access current state)
+/// - `update`: Function to handle drag messages and update both the model and your list
+/// - `drag_events`: Function to generate mouse event attributes for draggable elements
+/// - `drop_events`: Function to generate mouse event attributes for drop targets
+/// - `ghost_styles`: Function to generate CSS styling for the ghost element
+/// - `info`: Function to extract current drag information (positions, indices, etc.)
+///
+/// ## Usage
+///
+/// ```gleam
+/// // In your update function:
+/// DndMsg(dnd_msg) -> {
+///   let #(new_dnd, new_items) =
+///     model.system.update(dnd_msg, model.system.model, model.items)
+///   let updated_system = dnd.System(..model.system, model: new_dnd)
+///   Model(system: updated_system, items: new_items)
+/// }
+///
+/// // In your view function:
+/// html.div(
+///   [..model.system.drag_events(index, element_id)],
+///   [html.text(item)]
+/// )
+/// ```
 pub type System(a, msg) {
   System(
     model: Model,
@@ -293,7 +438,7 @@ fn insert_after(drag_index: Int, drop_index: Int, list: List(a)) -> List(a) {
   }
 }
 
-// InsertBefore operation  
+// InsertBefore operation
 fn insert_before(drag_index: Int, drop_index: Int, list: List(a)) -> List(a) {
   case drag_index < drop_index {
     True -> before_forward(drag_index, drop_index, list)
