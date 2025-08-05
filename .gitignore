@@ -1,0 +1,6 @@
+*.beam
+*.ez
+/build
+/example/build
+/groupsexample/build
+erl_crash.dump
