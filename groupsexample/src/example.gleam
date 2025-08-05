@@ -1,8 +1,8 @@
+import dnd/groups
 import gleam/dynamic/decode
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
-import groups
 import lustre
 import lustre/attribute
 import lustre/element.{type Element}

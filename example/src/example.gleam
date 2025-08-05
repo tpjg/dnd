@@ -33,7 +33,7 @@ fn init(_flags) -> Model {
   let config =
     dnd.Config(
       before_update: fn(_, _, list) { list },
-      movement: dnd.Free,
+      movement: dnd.Vertical,
       listen: dnd.OnDrag,
       operation: dnd.Rotate,
     )
