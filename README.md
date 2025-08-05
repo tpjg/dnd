@@ -1,6 +1,6 @@
 # Gleam Drag and Drop Library
 
-A comprehensive drag-and-drop library for Gleam applications built with the Lustre web framework. This library is a **direct port of the [Elm dnd-list](https://package.elm-lang.org/packages/annaghi/dnd-list/latest/) package** by [Anna Bansaghi](https://github.com/annaghi), bringing the same powerful functionality to the Gleam ecosystem.
+A drag-and-drop library for Gleam applications built with the Lustre web framework. This library is a **direct port of the [Elm dnd-list](https://package.elm-lang.org/packages/annaghi/dnd-list/latest/) package** by [Anna Bansaghi](https://github.com/annaghi), bringing the same functionality to the Gleam ecosystem.
 
 **Original Elm package**: https://annaghi.github.io/dnd-list/
 
@@ -17,8 +17,6 @@ While dragging and dropping a list item, the mouse events, the ghost element's p
 - **Detailed state information**: Access drag source, drop target, positions, and DOM elements during operations
 - **Type-safe API**: Full Gleam type safety with phantom types for your data models
 - **Groups support**: Advanced functionality for transferring items between logical groups with different operations for same-group vs cross-group movements
-- **Auxiliary items**: Support for headers, footers, and separator elements that don't participate in dragging but provide drop zones
-- **Cross-browser compatibility**: Works reliably across modern browsers including Chrome, Safari, and Firefox
 
 ## Architecture
 
