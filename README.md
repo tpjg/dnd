@@ -12,7 +12,7 @@ While dragging and dropping a list item, the mouse events, the ghost element's p
 
 - **Complete drag-and-drop system**: Handle mouse events, ghost element positioning, and list sorting automatically
 - **Flexible configuration**: Choose from multiple operations (insert, rotate, swap) and listen modes (on drag vs on drop)
-- **Movement constraints**: Support for free, horizontal, or vertical movement (planned feature)
+- **Movement constraints**: Support for free, horizontal, or vertical movement
 - **Visual feedback**: Ghost element follows cursor with customizable styling
 - **Detailed state information**: Access drag source, drop target, positions, and DOM elements during operations
 - **Type-safe API**: Full Gleam type safety with phantom types for your data models
@@ -32,7 +32,9 @@ Both modules follow The Elm Architecture (TEA) pattern with:
 
 ## Installation
 
-```sh gleam add dnd@1 ```
+```sh
+gleam add dnd
+```
 
 ## Basic Usage
 
@@ -101,7 +103,7 @@ fn view(model: Model) -> element.Element(Msg) {
 For more complex scenarios with multiple groups:
 
 ```gleam
-import groups
+import dnd/groups
 
 type Group {
   Left
