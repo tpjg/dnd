@@ -1,5 +1,5 @@
 name = "dnd"
-version = "1.0.1"
+version = "1.0.2"
 
 # Target specifies the target platform for the project. running this in a browser.
 target = "javascript"
@@ -10,7 +10,7 @@ target = "javascript"
 description = "Drag and Drop library for gleam / lustre"
 licences = ["BSD-3-Clause"]
 repository = { type = "sourcehut", user = "tpjg", repo = "dnd" }
-links = [{ title = "Sources", href = "https://git.sr.ht/~tpjg/dnd" }]
+links = [{ title = "Issues", href = "https://todo.sr.ht/~tpjg/dnd" }]
 #
 # For a full reference of all the available options, you can have a look at
 # https://gleam.run/writing-gleam/gleam-toml/.
