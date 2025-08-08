@@ -130,6 +130,13 @@ fn view(model: Model) -> Element(Msg) {
         Some(_) -> event.on("mouseup", decode.success(DndMsg(groups.DragEnd)))
         None -> attribute.none()
       },
+      // Also end dragging when the mouse leaves the window to prevent ghost
+      // items from sticking around
+      case model.system.info(model.system.model) {
+        Some(_) ->
+          event.on("mouseleave", decode.success(DndMsg(groups.DragEnd)))
+        None -> attribute.none()
+      },
     ],
     [
       group_view(model, Left, light_red()),

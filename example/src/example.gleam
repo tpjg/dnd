@@ -82,6 +82,12 @@ fn view(model: Model) -> Element(Msg) {
         Some(_) -> event.on("mouseup", decode.success(DndMsg(dnd.DragEnd)))
         None -> attribute.none()
       },
+      // Also end dragging when the mouse leaves the window to prevent ghost
+      // items from sticking around
+      case model.system.info(model.system.model) {
+        Some(_) -> event.on("mouseleave", decode.success(DndMsg(dnd.DragEnd)))
+        None -> attribute.none()
+      },
     ],
     [
       html.div([attribute.class("max-w-md mx-auto")], [

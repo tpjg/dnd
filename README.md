@@ -221,3 +221,22 @@ cd groupsexample && gleam run -m lustre/dev start  # Groups example
 - `Listen`: When to trigger operations (OnDrag vs OnDrop)
 
 The library provides a clean, type-safe API that integrates seamlessly with Lustre applications while offering the flexibility to handle complex drag-and-drop scenarios.
+
+## Development
+
+File bug reports or feature requests at the [issue tracker](https://todo.sr.ht/~tpjg/dnd).
+To send patches configure git [sendemail](https://git-send-email.io) and send your patches.
+
+```sh
+git config sendemail.to "~tpjg/dnd-dev@lists.sr.ht"
+
+git commit -m "..."
+git send-email HEAD^
+```
+
+Or to send just once:
+
+```sh
+git commit
+git send-email --to "~tpjg/dnd-dev@lists.sr.ht" HEAD^
+```
