@@ -2,5 +2,8 @@
 *.ez
 /build
 /example/build
+/example/priv
 /groupsexample/build
+/groupsexample/priv
+manifest.toml
 erl_crash.dump

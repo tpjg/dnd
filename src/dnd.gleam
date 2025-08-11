@@ -422,12 +422,12 @@ fn update_list_for_operation(
 }
 
 // Helper function to split a list at a given index
-fn split_at(index: Int, list: List(a)) -> #(List(a), List(a)) {
+pub fn split_at(index: Int, list: List(a)) -> #(List(a), List(a)) {
   #(list.take(list, index), list.drop(list, index))
 }
 
 // InsertAfter operation
-fn insert_after(drag_index: Int, drop_index: Int, list: List(a)) -> List(a) {
+pub fn insert_after(drag_index: Int, drop_index: Int, list: List(a)) -> List(a) {
   case drag_index < drop_index {
     True -> after_forward(drag_index, drop_index, list)
     False ->
@@ -439,7 +439,7 @@ fn insert_after(drag_index: Int, drop_index: Int, list: List(a)) -> List(a) {
 }
 
 // InsertBefore operation
-fn insert_before(drag_index: Int, drop_index: Int, list: List(a)) -> List(a) {
+pub fn insert_before(drag_index: Int, drop_index: Int, list: List(a)) -> List(a) {
   case drag_index < drop_index {
     True -> before_forward(drag_index, drop_index, list)
     False ->
@@ -451,7 +451,7 @@ fn insert_before(drag_index: Int, drop_index: Int, list: List(a)) -> List(a) {
 }
 
 // Rotate operation
-fn rotate_items(drag_index: Int, drop_index: Int, list: List(a)) -> List(a) {
+pub fn rotate_items(drag_index: Int, drop_index: Int, list: List(a)) -> List(a) {
   case drag_index < drop_index {
     True -> after_forward(drag_index, drop_index, list)
     False ->
@@ -463,7 +463,7 @@ fn rotate_items(drag_index: Int, drop_index: Int, list: List(a)) -> List(a) {
 }
 
 // Swap operation
-fn swap_items(drag_index: Int, drop_index: Int, list: List(a)) -> List(a) {
+pub fn swap_items(drag_index: Int, drop_index: Int, list: List(a)) -> List(a) {
   case drag_index != drop_index {
     True -> swap_at(drag_index, drop_index, list)
     False -> list
@@ -471,7 +471,7 @@ fn swap_items(drag_index: Int, drop_index: Int, list: List(a)) -> List(a) {
 }
 
 // Helper functions for different movement directions
-fn after_backward(i: Int, j: Int, list: List(a)) -> List(a) {
+pub fn after_backward(i: Int, j: Int, list: List(a)) -> List(a) {
   let #(beginning, rest) = split_at(j + 1, list)
   let #(middle, end) = split_at(i - j - 1, rest)
   let #(head, tail) = split_at(1, end)
@@ -479,7 +479,7 @@ fn after_backward(i: Int, j: Int, list: List(a)) -> List(a) {
   list.append(list.append(list.append(beginning, head), middle), tail)
 }
 
-fn after_forward(i: Int, j: Int, list: List(a)) -> List(a) {
+pub fn after_forward(i: Int, j: Int, list: List(a)) -> List(a) {
   let #(beginning, rest) = split_at(i, list)
   let #(middle, end) = split_at(j - i + 1, rest)
   let #(head, tail) = split_at(1, middle)
@@ -487,7 +487,7 @@ fn after_forward(i: Int, j: Int, list: List(a)) -> List(a) {
   list.append(list.append(list.append(beginning, tail), head), end)
 }
 
-fn before_backward(i: Int, j: Int, list: List(a)) -> List(a) {
+pub fn before_backward(i: Int, j: Int, list: List(a)) -> List(a) {
   let #(beginning, rest) = split_at(j, list)
   let #(middle, end) = split_at(i - j, rest)
   let #(head, tail) = split_at(1, end)
@@ -495,7 +495,7 @@ fn before_backward(i: Int, j: Int, list: List(a)) -> List(a) {
   list.append(list.append(list.append(beginning, head), middle), tail)
 }
 
-fn before_forward(i: Int, j: Int, list: List(a)) -> List(a) {
+pub fn before_forward(i: Int, j: Int, list: List(a)) -> List(a) {
   let #(beginning, rest) = split_at(i, list)
   let #(middle, end) = split_at(j - i, rest)
   let #(head, tail) = split_at(1, middle)
@@ -503,7 +503,7 @@ fn before_forward(i: Int, j: Int, list: List(a)) -> List(a) {
   list.append(list.append(list.append(beginning, tail), head), end)
 }
 
-fn swap_at(i: Int, j: Int, list: List(a)) -> List(a) {
+pub fn swap_at(i: Int, j: Int, list: List(a)) -> List(a) {
   let item_i = list.drop(list, i) |> list.take(1)
   let item_j = list.drop(list, j) |> list.take(1)
 
@@ -610,7 +610,7 @@ fn ghost_styles(movement: Movement) -> fn(Model) -> List(Attribute(msg)) {
 
 // INFO EXTRACTION -------------------------------------------------------------
 
-fn get_info(model: Model) -> Option(Info) {
+pub fn get_info(model: Model) -> Option(Info) {
   case model {
     Model(Some(state)) -> {
       Some(Info(

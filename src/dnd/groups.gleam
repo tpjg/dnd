@@ -1,3 +1,4 @@
+import dnd
 import gleam/dynamic/decode
 import gleam/float
 import gleam/list
@@ -9,6 +10,12 @@ import lustre/event
 
 pub type Position {
   Position(x: Float, y: Float)
+}
+
+pub type Movement {
+  Free
+  Horizontal
+  Vertical
 }
 
 /// Determines when list modifications should be applied during drag operations.
@@ -128,6 +135,7 @@ pub type GroupsConfig(a) {
 /// ## Fields
 ///
 /// - `before_update`: A callback function that allows you to modify the list before any operation is applied
+/// - `movement`: Constrains how the ghost element can move (Free, Horizontal, or Vertical)
 /// - `listen`: When to apply same-group changes (OnDrag for real-time, OnDrop for final placement)
 /// - `operation`: What operation to perform for same-group transfers
 /// - `groups`: Configuration for cross-group operations (see GroupsConfig)
@@ -144,6 +152,7 @@ pub type GroupsConfig(a) {
 /// ```gleam
 /// let config = groups.Config(
 ///   before_update: fn(_, _, list) { list },
+///   movement: groups.Free,        // Allow movement in any direction
 ///   listen: groups.OnDrag,        // Same-group: update while dragging
 ///   operation: groups.Rotate,     // Same-group: rotate items
 ///   groups: groups.GroupsConfig(
@@ -157,6 +166,7 @@ pub type GroupsConfig(a) {
 pub type Config(a) {
   Config(
     before_update: fn(Int, Int, List(a)) -> List(a),
+    movement: Movement,
     listen: Listen,
     operation: Operation,
     groups: GroupsConfig(a),
@@ -305,7 +315,7 @@ pub fn create(config: Config(a), step_msg: fn(DndMsg) -> msg) -> System(a, msg) 
     update: system_update(config),
     drag_events: drag_events(step_msg),
     drop_events: drop_events(step_msg),
-    ghost_styles: ghost_styles(),
+    ghost_styles: ghost_styles(config.movement),
     info: get_info,
   )
 }
@@ -688,10 +698,10 @@ fn sublist_update(
   list: List(a),
 ) -> List(a) {
   case operation {
-    InsertAfter -> insert_after(drag_index, drop_index, list)
-    InsertBefore -> insert_before(drag_index, drop_index, list)
-    Rotate -> rotate_items(drag_index, drop_index, list)
-    Swap -> swap_items(drag_index, drop_index, list)
+    InsertAfter -> dnd.insert_after(drag_index, drop_index, list)
+    InsertBefore -> dnd.insert_before(drag_index, drop_index, list)
+    Rotate -> dnd.rotate_items(drag_index, drop_index, list)
+    Swap -> dnd.swap_items(drag_index, drop_index, list)
     Unaltered -> list
   }
 }
@@ -708,11 +718,11 @@ fn groups_list_update(
   case operation {
     InsertAfter -> {
       let updated_list = drag_group_update(setter, drag_index, drop_index, list)
-      insert_after(drag_index, drop_index, updated_list)
+      dnd.insert_after(drag_index, drop_index, updated_list)
     }
     InsertBefore -> {
       let updated_list = drag_group_update(setter, drag_index, drop_index, list)
-      insert_before(drag_index, drop_index, updated_list)
+      dnd.insert_before(drag_index, drop_index, updated_list)
     }
     Rotate -> {
       case drag_index < drop_index {
@@ -724,7 +734,7 @@ fn groups_list_update(
           }
           let updated_list =
             all_group_update(transform_fn, drag_index, drop_index, list)
-          rotate_items(drag_index, drop_index, updated_list)
+          dnd.rotate_items(drag_index, drop_index, updated_list)
         }
         False -> {
           let transform_fn = fn(items) {
@@ -732,114 +742,17 @@ fn groups_list_update(
           }
           let updated_list =
             all_group_update(transform_fn, drop_index, drag_index, list)
-          rotate_items(drag_index, drop_index, updated_list)
+          dnd.rotate_items(drag_index, drop_index, updated_list)
         }
       }
     }
     Swap -> {
       let updated_list =
         drag_and_drop_group_update(setter, drag_index, drop_index, list)
-      swap_items(drag_index, drop_index, updated_list)
+      dnd.swap_items(drag_index, drop_index, updated_list)
     }
     Unaltered -> list
   }
-}
-
-// Import the list operation functions from dnd module logic
-// Helper function to split a list at a given index
-fn split_at(index: Int, list: List(a)) -> #(List(a), List(a)) {
-  #(list.take(list, index), list.drop(list, index))
-}
-
-// InsertAfter operation
-fn insert_after(drag_index: Int, drop_index: Int, list: List(a)) -> List(a) {
-  case drag_index < drop_index {
-    True -> after_forward(drag_index, drop_index, list)
-    False ->
-      case drop_index < drag_index {
-        True -> after_backward(drag_index, drop_index, list)
-        False -> list
-      }
-  }
-}
-
-// InsertBefore operation
-fn insert_before(drag_index: Int, drop_index: Int, list: List(a)) -> List(a) {
-  case drag_index < drop_index {
-    True -> before_forward(drag_index, drop_index, list)
-    False ->
-      case drop_index < drag_index {
-        True -> before_backward(drag_index, drop_index, list)
-        False -> list
-      }
-  }
-}
-
-// Rotate operation
-fn rotate_items(drag_index: Int, drop_index: Int, list: List(a)) -> List(a) {
-  case drag_index < drop_index {
-    True -> after_forward(drag_index, drop_index, list)
-    False ->
-      case drop_index < drag_index {
-        True -> before_backward(drag_index, drop_index, list)
-        False -> list
-      }
-  }
-}
-
-// Swap operation
-fn swap_items(drag_index: Int, drop_index: Int, list: List(a)) -> List(a) {
-  case drag_index != drop_index {
-    True -> swap_at(drag_index, drop_index, list)
-    False -> list
-  }
-}
-
-// Helper functions for different movement directions
-fn after_backward(i: Int, j: Int, list: List(a)) -> List(a) {
-  let #(beginning, rest) = split_at(j + 1, list)
-  let #(middle, end) = split_at(i - j - 1, rest)
-  let #(head, tail) = split_at(1, end)
-
-  list.append(list.append(list.append(beginning, head), middle), tail)
-}
-
-fn after_forward(i: Int, j: Int, list: List(a)) -> List(a) {
-  let #(beginning, rest) = split_at(i, list)
-  let #(middle, end) = split_at(j - i + 1, rest)
-  let #(head, tail) = split_at(1, middle)
-
-  list.append(list.append(list.append(beginning, tail), head), end)
-}
-
-fn before_backward(i: Int, j: Int, list: List(a)) -> List(a) {
-  let #(beginning, rest) = split_at(j, list)
-  let #(middle, end) = split_at(i - j, rest)
-  let #(head, tail) = split_at(1, end)
-
-  list.append(list.append(list.append(beginning, head), middle), tail)
-}
-
-fn before_forward(i: Int, j: Int, list: List(a)) -> List(a) {
-  let #(beginning, rest) = split_at(i, list)
-  let #(middle, end) = split_at(j - i, rest)
-  let #(head, tail) = split_at(1, middle)
-
-  list.append(list.append(list.append(beginning, tail), head), end)
-}
-
-fn swap_at(i: Int, j: Int, list: List(a)) -> List(a) {
-  let item_i = list.drop(list, i) |> list.take(1)
-  let item_j = list.drop(list, j) |> list.take(1)
-
-  list.index_map(list, fn(item, index) {
-    case index {
-      idx if idx == i -> item_j
-      idx if idx == j -> item_i
-      _ -> [item]
-    }
-  })
-  |> list.flatten()
 }
 
 // EVENT HANDLERS --------------------------------------------------------------
@@ -881,25 +794,52 @@ fn drop_events(
 
 // GHOST STYLES ---------------------------------------------------------------
 
-fn ghost_styles() -> fn(Model) -> List(Attribute(msg)) {
+fn ghost_styles(movement: Movement) -> fn(Model) -> List(Attribute(msg)) {
   fn(model: Model) -> List(Attribute(msg)) {
     case model {
       Model(Some(state)) -> {
-        [
+        let essential_styles = [
           attribute.style("position", "fixed"),
           attribute.style("pointer-events", "none"),
           attribute.style("z-index", "1000"),
           attribute.style("user-select", "none"),
           attribute.style("-webkit-user-select", "none"),
-          attribute.style(
-            "left",
-            float.to_string(state.current_position.x) <> "px",
-          ),
-          attribute.style(
-            "top",
-            float.to_string(state.current_position.y) <> "px",
-          ),
         ]
+
+        let position_styles = case movement {
+          Free -> [
+            attribute.style(
+              "left",
+              float.to_string(state.current_position.x) <> "px",
+            ),
+            attribute.style(
+              "top",
+              float.to_string(state.current_position.y) <> "px",
+            ),
+          ]
+          Horizontal -> [
+            attribute.style(
+              "left",
+              float.to_string(state.current_position.x) <> "px",
+            ),
+            attribute.style(
+              "top",
+              float.to_string(state.start_position.y) <> "px",
+            ),
+          ]
+          Vertical -> [
+            attribute.style(
+              "left",
+              float.to_string(state.start_position.x) <> "px",
+            ),
+            attribute.style(
+              "top",
+              float.to_string(state.current_position.y) <> "px",
+            ),
+          ]
+        }
+
+        list.append(essential_styles, position_styles)
       }
       Model(None) -> []
     }

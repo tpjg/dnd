@@ -69,6 +69,7 @@ fn init(_flags) -> Model {
   let config =
     groups.Config(
       before_update: fn(_, _, list) { list },
+      movement: groups.Free,
       listen: groups.OnDrag,
       operation: groups.Rotate,
       groups: groups.GroupsConfig(
