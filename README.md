@@ -11,6 +11,7 @@ This library provides both basic drag-and-drop functionality and advanced group-
 While dragging and dropping a list item, the mouse events, the ghost element's positioning and the list sorting are handled internally by this library. Here are the key capabilities:
 
 - **Complete drag-and-drop system**: Handle mouse events, ghost element positioning, and list sorting automatically
+- **Touch support**: Two-tap selection pattern for mobile devices (tap to select, tap drop zone to move)
 - **Flexible configuration**: Choose from multiple operations (insert, rotate, swap) and listen modes (on drag vs on drop)
 - **Movement constraints**: Support for free, horizontal, or vertical movement
 - **Visual feedback**: Ghost element follows cursor with customizable styling
@@ -150,13 +151,104 @@ fn init(_flags) -> Model {
 - **`OnDrag`**: Updates happen continuously while dragging
 - **`OnDrop`**: Updates happen only when item is dropped
 
+### Input Modes
+- **`MouseOnly`**: Traditional mouse-based drag-and-drop (default)
+- **`TouchOnly`**: Touch-based two-tap selection pattern only
+- **`Auto`**: Automatically detect input type per-interaction
+
+## Touch Support
+
+The library supports touch devices using a two-tap selection pattern that doesn't interfere with scrolling:
+
+1. **Tap an item** to select it (item highlights, drop zones appear)
+2. **Tap a drop zone** to move the selected item there
+3. Selection auto-cancels after a configurable timeout (default 5 seconds)
+
+### Enabling Touch Support
+
+```gleam
+import lustre/effect.{type Effect}
+
+fn init(_flags) -> #(Model, Effect(Msg)) {
+  let config = dnd.Config(
+    before_update: fn(_, _, list) { list },
+    movement: dnd.Vertical,
+    listen: dnd.OnDrag,
+    operation: dnd.Rotate,
+    // Enable Auto mode for both mouse and touch
+    mode: dnd.Auto,
+    // Auto-cancel after 5 seconds (0 to disable)
+    touch_timeout_ms: 5000,
+  )
+
+  let system = dnd.create(config, DndMsg)
+  #(Model(system: system, items: [...]), effect.none())
+}
+
+fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
+  case msg {
+    DndMsg(dnd_msg) -> {
+      // Use update_with_effect for timeout support
+      let #(new_dnd, new_items, dnd_effect) =
+        model.system.update_with_effect(dnd_msg, model.system.model, model.items)
+      let updated_system = dnd.System(..model.system, model: new_dnd)
+      #(Model(system: updated_system, items: new_items), dnd_effect)
+    }
+  }
+}
+```
+
+### Touch View Integration
+
+```gleam
+fn view(model: Model) -> Element(Msg) {
+  let system = model.system
+  let is_selecting = system.is_touch_selecting(system.model)
+
+  html.div([], [
+    // Render items with drop zones when selecting
+    ..list.index_map(model.items, fn(item, i) {
+      let item_el = item_view(item, i, system)
+      case is_selecting {
+        True -> [drop_zone_view(i, system), item_el]
+        False -> [item_el]
+      }
+    }) |> list.flatten,
+  ])
+}
+
+fn item_view(item, index, system) -> Element(Msg) {
+  html.div(
+    list.flatten([
+      [attribute.id("item-" <> int.to_string(index))],
+      // Mouse drag events
+      system.drag_events(index, "item-" <> int.to_string(index)),
+      // Touch grip events (tap to select)
+      system.touch_grip_events(index, "item-" <> int.to_string(index)),
+    ]),
+    [html.text(item)]
+  )
+}
+
+fn drop_zone_view(index, system) -> Element(Msg) {
+  html.div(
+    list.flatten([
+      [attribute.class("drop-zone")],
+      system.touch_drop_zone_events(index),
+    ]),
+    [html.text("Drop here")]
+  )
+}
+```
+
 ## Examples
 
 This repository includes two complete examples:
 
-### Basic Example (`src/example.gleam`)
+### Basic Example (`example/src/example.gleam`)
 A simple sortable list demonstrating:
 - Basic drag and drop with visual feedback
+- Touch support with Auto mode
 - Multiple operation types (InsertBefore, Rotate, Swap)
 - Ghost element styling
 - Cross-browser compatibility
@@ -170,6 +262,7 @@ gleam run -m lustre/dev start
 ### Groups Example (`groupsexample/src/example.gleam`)
 An advanced two-column interface showing:
 - Items organized in Left and Right groups
+- Touch support for cross-group transfers
 - Cross-group item transfers
 - Same-group reordering
 - Footer drop zones for group transfers
@@ -193,7 +286,8 @@ The library uses precise mouse coordinate tracking:
 - Positioned using `position: fixed` for viewport-relative positioning
 
 ### Cross-Browser Support
-- Tested on Chrome and Safari
+- Tested on Chrome and Safari (desktop and mobile)
+- Touch support tested on iOS Safari
 
 ## Development
 

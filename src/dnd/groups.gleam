@@ -1,9 +1,11 @@
 import dnd
 import gleam/dynamic/decode
 import gleam/float
+import gleam/javascript/promise
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import lustre/attribute.{type Attribute}
+import lustre/effect.{type Effect}
 import lustre/event
 
 // TYPES -----------------------------------------------------------------------
@@ -16,6 +18,13 @@ pub type Movement {
   Free
   Horizontal
   Vertical
+}
+
+/// Determines which input mode the drag-and-drop system should use.
+pub type InputMode {
+  MouseOnly
+  TouchOnly
+  Auto
 }
 
 /// Determines when list modifications should be applied during drag operations.
@@ -139,6 +148,8 @@ pub type GroupsConfig(a) {
 /// - `listen`: When to apply same-group changes (OnDrag for real-time, OnDrop for final placement)
 /// - `operation`: What operation to perform for same-group transfers
 /// - `groups`: Configuration for cross-group operations (see GroupsConfig)
+/// - `mode`: Input mode for the system (MouseOnly, TouchOnly, or Auto). Default: MouseOnly
+/// - `touch_timeout_ms`: Milliseconds before touch selection auto-cancels. Default: 5000. Set to 0 to disable.
 ///
 /// ## Behavior
 ///
@@ -152,15 +163,17 @@ pub type GroupsConfig(a) {
 /// ```gleam
 /// let config = groups.Config(
 ///   before_update: fn(_, _, list) { list },
-///   movement: groups.Free,        // Allow movement in any direction
-///   listen: groups.OnDrag,        // Same-group: update while dragging
-///   operation: groups.Rotate,     // Same-group: rotate items
+///   movement: groups.Free,
+///   listen: groups.OnDrag,
+///   operation: groups.Rotate,
 ///   groups: groups.GroupsConfig(
-///     listen: groups.OnDrag,      // Cross-group: update while dragging
-///     operation: groups.InsertBefore,  // Cross-group: insert before target
+///     listen: groups.OnDrag,
+///     operation: groups.InsertBefore,
 ///     comparator: fn(a, b) { a.group == b.group },
 ///     setter: fn(target, drag) { Item(..drag, group: target.group) },
 ///   ),
+///   mode: groups.MouseOnly,
+///   touch_timeout_ms: 5000,
 /// )
 /// ```
 pub type Config(a) {
@@ -170,6 +183,8 @@ pub type Config(a) {
     listen: Listen,
     operation: Operation,
     groups: GroupsConfig(a),
+    mode: InputMode,
+    touch_timeout_ms: Int,
   )
 }
 
@@ -185,8 +200,20 @@ pub type State {
   )
 }
 
+/// Touch selection state for the two-tap pattern.
+pub type TouchState {
+  TouchState(selected_index: Int, selected_id: String)
+}
+
+/// Interaction state - tracks whether we're idle, mouse dragging, or touch selecting.
+pub type InteractionState {
+  Idle
+  MouseDragging(State)
+  TouchSelecting(TouchState)
+}
+
 pub type Model {
-  Model(Option(State))
+  Model(interaction: InteractionState, touch_generation: Int)
 }
 
 /// Information about the current drag operation when an item is being dragged.
@@ -287,36 +314,62 @@ pub type Info {
 ///   [html.text(item.value)]
 /// )
 /// ```
+///
+/// ## Touch Support
+///
+/// For touch-enabled modes, use the additional fields:
+/// - `update_with_effect`, `touch_grip_events`, `touch_drop_zone_events`, etc.
 pub type System(a, msg) {
   System(
     model: Model,
+    // Existing (mouse-compatible)
     update: fn(DndMsg, Model, List(a)) -> #(Model, List(a)),
     drag_events: fn(Int, String) -> List(Attribute(msg)),
     drop_events: fn(Int, String) -> List(Attribute(msg)),
     ghost_styles: fn(Model) -> List(Attribute(msg)),
     info: fn(Model) -> Option(Info),
+    // New (touch support)
+    update_with_effect: fn(DndMsg, Model, List(a)) -> #(Model, List(a), Effect(msg)),
+    touch_grip_events: fn(Int, String) -> List(Attribute(msg)),
+    touch_drop_zone_events: fn(Int) -> List(Attribute(msg)),
+    cancel_events: fn() -> List(Attribute(msg)),
+    is_touch_selecting: fn(Model) -> Bool,
+    selected_index: fn(Model) -> Option(Int),
   )
 }
 
 pub type DndMsg {
+  // Mouse messages
   DragStart(Int, String, Position)
   Drag(Position)
   DragOver(Int, String)
   DragEnter(Int)
   DragLeave
   DragEnd
+  // Touch messages
+  TouchSelect(Int, String)
+  TouchDrop(Int)
+  TouchCancel
+  TouchTimeout(Int)
 }
 
 // SYSTEM CREATION -------------------------------------------------------------
 
 pub fn create(config: Config(a), step_msg: fn(DndMsg) -> msg) -> System(a, msg) {
   System(
-    model: Model(None),
+    model: Model(interaction: Idle, touch_generation: 0),
     update: system_update(config),
     drag_events: drag_events(step_msg),
     drop_events: drop_events(step_msg),
     ghost_styles: ghost_styles(config.movement),
     info: get_info,
+    // Touch support
+    update_with_effect: system_update_with_effect(config, step_msg),
+    touch_grip_events: touch_grip_events(step_msg),
+    touch_drop_zone_events: touch_drop_zone_events(step_msg),
+    cancel_events: cancel_events(step_msg),
+    is_touch_selecting: is_touch_selecting,
+    selected_index: get_selected_index,
   )
 }
 
@@ -326,8 +379,11 @@ fn system_update(
   config: Config(a),
 ) -> fn(DndMsg, Model, List(a)) -> #(Model, List(a)) {
   fn(msg: DndMsg, model: Model, list: List(a)) -> #(Model, List(a)) {
-    case msg {
-      DragStart(drag_index, drag_element_id, position) -> {
+    case msg, model.interaction {
+      // === MOUSE MESSAGES ===
+
+      // DragStart: Only start if idle
+      DragStart(drag_index, drag_element_id, position), Idle -> {
         let new_state =
           State(
             drag_index: drag_index,
@@ -338,191 +394,296 @@ fn system_update(
             drag_element_id: drag_element_id,
             drop_element_id: drag_element_id,
           )
-        #(Model(Some(new_state)), list)
+        #(Model(..model, interaction: MouseDragging(new_state)), list)
       }
 
-      Drag(position) -> {
-        case model {
-          Model(Some(state)) -> {
-            let updated_state =
-              State(
-                ..state,
-                current_position: position,
-                drag_counter: state.drag_counter + 1,
+      // Drag: Only process if mouse dragging
+      Drag(position), MouseDragging(state) -> {
+        let updated_state =
+          State(
+            ..state,
+            current_position: position,
+            drag_counter: state.drag_counter + 1,
+          )
+        #(Model(..model, interaction: MouseDragging(updated_state)), list)
+      }
+
+      // DragOver: Only process if mouse dragging
+      DragOver(drop_index, drop_element_id), MouseDragging(state) -> {
+        let updated_state =
+          State(
+            ..state,
+            drop_index: drop_index,
+            drop_element_id: drop_element_id,
+          )
+        #(Model(..model, interaction: MouseDragging(updated_state)), list)
+      }
+
+      // DragEnter: Group-aware processing
+      DragEnter(drop_index), MouseDragging(state) -> {
+        case state.drag_counter > 1 && state.drag_index != drop_index {
+          True -> {
+            let equal_groups =
+              groups_equal(
+                config.groups.comparator,
+                state.drag_index,
+                drop_index,
+                list,
               )
-            #(Model(Some(updated_state)), list)
-          }
-          Model(None) -> #(model, list)
-        }
-      }
 
-      DragOver(drop_index, drop_element_id) -> {
-        case model {
-          Model(Some(state)) -> {
-            let updated_state =
-              State(
-                ..state,
-                drop_index: drop_index,
-                drop_element_id: drop_element_id,
-              )
-            #(Model(Some(updated_state)), list)
-          }
-          Model(None) -> #(model, list)
-        }
-      }
-
-      DragEnter(drop_index) -> {
-        case model {
-          Model(Some(state)) -> {
-            case state.drag_counter > 1 && state.drag_index != drop_index {
-              True -> {
-                let equal_groups =
-                  groups_equal(
-                    config.groups.comparator,
+            case equal_groups, config.listen, config.groups.listen {
+              // Same group operations
+              True, OnDrag, _ -> {
+                let updated_state =
+                  update_state_for_operation(
+                    config.operation,
+                    drop_index,
+                    state,
+                  )
+                let updated_list =
+                  sublist_update(
+                    config.operation,
                     state.drag_index,
                     drop_index,
                     list,
                   )
-
-                case equal_groups, config.listen, config.groups.listen {
-                  // Same group operations
-                  True, OnDrag, _ -> {
-                    let updated_state =
-                      update_state_for_operation(
-                        config.operation,
-                        drop_index,
-                        state,
-                      )
-                    let updated_list =
-                      sublist_update(
-                        config.operation,
-                        state.drag_index,
-                        drop_index,
-                        list,
-                      )
-                    #(
-                      Model(Some(updated_state)),
-                      config.before_update(
-                        state.drag_index,
-                        drop_index,
-                        updated_list,
-                      ),
-                    )
-                  }
-                  // Different group operations
-                  False, _, OnDrag -> {
-                    let updated_state =
-                      update_state_for_operation(
-                        config.groups.operation,
-                        drop_index,
-                        state,
-                      )
-                    let updated_list =
-                      groups_list_update(
-                        config.groups.operation,
-                        config.groups.comparator,
-                        config.groups.setter,
-                        state.drag_index,
-                        drop_index,
-                        list,
-                      )
-                    #(
-                      Model(Some(updated_state)),
-                      config.before_update(
-                        state.drag_index,
-                        drop_index,
-                        updated_list,
-                      ),
-                    )
-                  }
-                  // Reset drag counter for other cases
-                  _, _, _ -> {
-                    let updated_state = State(..state, drag_counter: 0)
-                    #(Model(Some(updated_state)), list)
-                  }
-                }
+                #(
+                  Model(..model, interaction: MouseDragging(updated_state)),
+                  config.before_update(state.drag_index, drop_index, updated_list),
+                )
               }
-              False -> #(model, list)
+              // Different group operations
+              False, _, OnDrag -> {
+                let updated_state =
+                  update_state_for_operation(
+                    config.groups.operation,
+                    drop_index,
+                    state,
+                  )
+                let updated_list =
+                  groups_list_update(
+                    config.groups.operation,
+                    config.groups.comparator,
+                    config.groups.setter,
+                    state.drag_index,
+                    drop_index,
+                    list,
+                  )
+                #(
+                  Model(..model, interaction: MouseDragging(updated_state)),
+                  config.before_update(state.drag_index, drop_index, updated_list),
+                )
+              }
+              // Reset drag counter for other cases
+              _, _, _ -> {
+                let updated_state = State(..state, drag_counter: 0)
+                #(Model(..model, interaction: MouseDragging(updated_state)), list)
+              }
             }
           }
-          Model(None) -> #(model, list)
+          False -> #(model, list)
         }
       }
 
-      DragLeave -> {
-        case model {
-          Model(Some(state)) -> {
-            let updated_state = State(..state, drop_index: state.drag_index)
-            #(Model(Some(updated_state)), list)
-          }
-          Model(None) -> #(model, list)
-        }
+      // DragLeave: Only process if mouse dragging
+      DragLeave, MouseDragging(state) -> {
+        let updated_state = State(..state, drop_index: state.drag_index)
+        #(Model(..model, interaction: MouseDragging(updated_state)), list)
       }
 
-      DragEnd -> {
-        case model {
-          Model(Some(state)) -> {
-            case state.drag_index != state.drop_index {
-              True -> {
-                let equal_groups =
-                  groups_equal(
-                    config.groups.comparator,
+      // DragEnd: Group-aware processing
+      DragEnd, MouseDragging(state) -> {
+        case state.drag_index != state.drop_index {
+          True -> {
+            let equal_groups =
+              groups_equal(
+                config.groups.comparator,
+                state.drag_index,
+                state.drop_index,
+                list,
+              )
+
+            case equal_groups, config.listen, config.groups.listen {
+              // Same group operations
+              True, OnDrop, _ -> {
+                let updated_list =
+                  sublist_update(
+                    config.operation,
                     state.drag_index,
                     state.drop_index,
                     list,
                   )
-
-                case equal_groups, config.listen, config.groups.listen {
-                  // Same group operations
-                  True, OnDrop, _ -> {
-                    let updated_list =
-                      sublist_update(
-                        config.operation,
-                        state.drag_index,
-                        state.drop_index,
-                        list,
-                      )
-                    #(
-                      Model(None),
-                      config.before_update(
-                        state.drag_index,
-                        state.drop_index,
-                        updated_list,
-                      ),
-                    )
-                  }
-                  // Different group operations
-                  False, _, OnDrop -> {
-                    let updated_list =
-                      groups_list_update(
-                        config.groups.operation,
-                        config.groups.comparator,
-                        config.groups.setter,
-                        state.drag_index,
-                        state.drop_index,
-                        list,
-                      )
-                    #(
-                      Model(None),
-                      config.before_update(
-                        state.drag_index,
-                        state.drop_index,
-                        updated_list,
-                      ),
-                    )
-                  }
-                  // No operation for other cases
-                  _, _, _ -> #(Model(None), list)
-                }
+                #(
+                  Model(..model, interaction: Idle),
+                  config.before_update(
+                    state.drag_index,
+                    state.drop_index,
+                    updated_list,
+                  ),
+                )
               }
-              False -> #(Model(None), list)
+              // Different group operations
+              False, _, OnDrop -> {
+                let updated_list =
+                  groups_list_update(
+                    config.groups.operation,
+                    config.groups.comparator,
+                    config.groups.setter,
+                    state.drag_index,
+                    state.drop_index,
+                    list,
+                  )
+                #(
+                  Model(..model, interaction: Idle),
+                  config.before_update(
+                    state.drag_index,
+                    state.drop_index,
+                    updated_list,
+                  ),
+                )
+              }
+              // No operation for other cases
+              _, _, _ -> #(Model(..model, interaction: Idle), list)
             }
           }
-          Model(None) -> #(Model(None), list)
+          False -> #(Model(..model, interaction: Idle), list)
         }
       }
+
+      // === TOUCH MESSAGES ===
+
+      // TouchSelect: Only start if idle
+      // Increment generation so old timeouts are ignored
+      TouchSelect(index, id), Idle -> {
+        let touch_state = TouchState(selected_index: index, selected_id: id)
+        let new_gen = model.touch_generation + 1
+        #(
+          Model(interaction: TouchSelecting(touch_state), touch_generation: new_gen),
+          list,
+        )
+      }
+
+      // TouchDrop: Group-aware processing for touch
+      TouchDrop(drop_index), TouchSelecting(touch_state) -> {
+        case touch_state.selected_index != drop_index {
+          True -> {
+            let equal_groups =
+              groups_equal(
+                config.groups.comparator,
+                touch_state.selected_index,
+                drop_index,
+                list,
+              )
+
+            // Use OnDrop-style behavior for touch (single operation)
+            case equal_groups {
+              True -> {
+                // Same group: use main operation
+                let updated_list =
+                  sublist_update(
+                    config.operation,
+                    touch_state.selected_index,
+                    drop_index,
+                    list,
+                  )
+                #(
+                  Model(..model, interaction: Idle),
+                  config.before_update(
+                    touch_state.selected_index,
+                    drop_index,
+                    updated_list,
+                  ),
+                )
+              }
+              False -> {
+                // Cross group: use groups operation with setter
+                let updated_list =
+                  groups_list_update(
+                    config.groups.operation,
+                    config.groups.comparator,
+                    config.groups.setter,
+                    touch_state.selected_index,
+                    drop_index,
+                    list,
+                  )
+                #(
+                  Model(..model, interaction: Idle),
+                  config.before_update(
+                    touch_state.selected_index,
+                    drop_index,
+                    updated_list,
+                  ),
+                )
+              }
+            }
+          }
+          False -> #(Model(..model, interaction: Idle), list)
+        }
+      }
+
+      // TouchCancel: Only process if touch selecting
+      TouchCancel, TouchSelecting(_) -> #(Model(..model, interaction: Idle), list)
+
+      // TouchTimeout: Only process if generation matches current
+      TouchTimeout(gen), TouchSelecting(_) if gen == model.touch_generation ->
+        #(Model(..model, interaction: Idle), list)
+
+      // Stale timeout (generation mismatch) - ignore
+      TouchTimeout(_), _ -> #(model, list)
+
+      // === CROSS-MODE INTERACTIONS ===
+
+      // Touch events cancel mouse dragging
+      TouchSelect(_, _), MouseDragging(_) ->
+        #(Model(..model, interaction: Idle), list)
+      TouchDrop(_), MouseDragging(_) -> #(Model(..model, interaction: Idle), list)
+      TouchCancel, MouseDragging(_) -> #(Model(..model, interaction: Idle), list)
+
+      // Mouse events are ignored during touch selecting
+      DragStart(_, _, _), TouchSelecting(_) -> #(model, list)
+      Drag(_), TouchSelecting(_) -> #(model, list)
+      DragOver(_, _), TouchSelecting(_) -> #(model, list)
+      DragEnter(_), TouchSelecting(_) -> #(model, list)
+      DragLeave, TouchSelecting(_) -> #(model, list)
+      DragEnd, TouchSelecting(_) -> #(model, list)
+
+      // === FALLBACK ===
+      _, _ -> #(model, list)
     }
   }
+}
+
+// System update with effect (for touch timeout)
+fn system_update_with_effect(
+  config: Config(a),
+  step_msg: fn(DndMsg) -> msg,
+) -> fn(DndMsg, Model, List(a)) -> #(Model, List(a), Effect(msg)) {
+  let base_update = system_update(config)
+
+  fn(msg: DndMsg, model: Model, list: List(a)) -> #(Model, List(a), Effect(msg)) {
+    let #(new_model, new_list) = base_update(msg, model, list)
+
+    // Pass the generation so stale timeouts are ignored
+    let eff = case msg, new_model.interaction, config.touch_timeout_ms {
+      TouchSelect(_, _), TouchSelecting(_), timeout_ms if timeout_ms > 0 ->
+        schedule_timeout(timeout_ms, new_model.touch_generation, step_msg)
+      _, _, _ -> effect.none()
+    }
+
+    #(new_model, new_list, eff)
+  }
+}
+
+fn schedule_timeout(
+  timeout_ms: Int,
+  generation: Int,
+  step_msg: fn(DndMsg) -> msg,
+) -> Effect(msg) {
+  effect.from(fn(dispatch) {
+    promise.wait(timeout_ms)
+    |> promise.tap(fn(_) { dispatch(step_msg(TouchTimeout(generation))) })
+    Nil
+  })
 }
 
 // GROUP HELPERS ---------------------------------------------------------------
@@ -792,12 +953,41 @@ fn drop_events(
   }
 }
 
+// TOUCH EVENT HANDLERS --------------------------------------------------------
+
+fn touch_grip_events(
+  step_msg: fn(DndMsg) -> msg,
+) -> fn(Int, String) -> List(Attribute(msg)) {
+  fn(index: Int, element_id: String) -> List(Attribute(msg)) {
+    [
+      event.on(
+        "touchend",
+        decode.success(step_msg(TouchSelect(index, element_id))),
+      ),
+    ]
+  }
+}
+
+fn touch_drop_zone_events(
+  step_msg: fn(DndMsg) -> msg,
+) -> fn(Int) -> List(Attribute(msg)) {
+  fn(drop_index: Int) -> List(Attribute(msg)) {
+    [event.on("touchend", decode.success(step_msg(TouchDrop(drop_index))))]
+  }
+}
+
+/// Cancel events - currently returns empty list.
+/// Touch cancellation is handled via timeout (touch_timeout_ms config).
+fn cancel_events(_step_msg: fn(DndMsg) -> msg) -> fn() -> List(Attribute(msg)) {
+  fn() -> List(Attribute(msg)) { [] }
+}
+
 // GHOST STYLES ---------------------------------------------------------------
 
 fn ghost_styles(movement: Movement) -> fn(Model) -> List(Attribute(msg)) {
   fn(model: Model) -> List(Attribute(msg)) {
-    case model {
-      Model(Some(state)) -> {
+    case model.interaction {
+      MouseDragging(state) -> {
         let essential_styles = [
           attribute.style("position", "fixed"),
           attribute.style("pointer-events", "none"),
@@ -841,7 +1031,8 @@ fn ghost_styles(movement: Movement) -> fn(Model) -> List(Attribute(msg)) {
 
         list.append(essential_styles, position_styles)
       }
-      Model(None) -> []
+      TouchSelecting(_) -> []
+      Idle -> []
     }
   }
 }
@@ -849,8 +1040,8 @@ fn ghost_styles(movement: Movement) -> fn(Model) -> List(Attribute(msg)) {
 // INFO EXTRACTION -------------------------------------------------------------
 
 fn get_info(model: Model) -> Option(Info) {
-  case model {
-    Model(Some(state)) -> {
+  case model.interaction {
+    MouseDragging(state) -> {
       Some(Info(
         drag_index: state.drag_index,
         drop_index: state.drop_index,
@@ -860,6 +1051,23 @@ fn get_info(model: Model) -> Option(Info) {
         current_position: state.current_position,
       ))
     }
-    Model(None) -> None
+    TouchSelecting(_) -> None
+    Idle -> None
+  }
+}
+
+// TOUCH STATE HELPERS ---------------------------------------------------------
+
+pub fn is_touch_selecting(model: Model) -> Bool {
+  case model.interaction {
+    TouchSelecting(_) -> True
+    _ -> False
+  }
+}
+
+pub fn get_selected_index(model: Model) -> Option(Int) {
+  case model.interaction {
+    TouchSelecting(touch_state) -> Some(touch_state.selected_index)
+    _ -> None
   }
 }
