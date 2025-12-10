@@ -242,7 +242,12 @@ pub type InteractionState {
 }
 
 pub type Model {
-  Model(interaction: InteractionState, touch_generation: Int)
+  Model(
+    interaction: InteractionState,
+    touch_generation: Int,
+    /// Blocks synthesized mouse events after touch interactions
+    mouse_blocked: Bool,
+  )
 }
 
 /// Information about the current drag operation when an item is being dragged.
@@ -394,7 +399,7 @@ pub type DndMsg {
 
 pub fn create(config: Config(a), step_msg: fn(DndMsg) -> msg) -> System(a, msg) {
   System(
-    model: Model(interaction: Idle, touch_generation: 0),
+    model: Model(interaction: Idle, touch_generation: 0, mouse_blocked: False),
     update: system_update(config),
     drag_events: drag_events(step_msg),
     drop_events: drop_events(step_msg),
@@ -420,6 +425,11 @@ fn system_update(
     case msg, model.interaction {
       // === MOUSE MESSAGES ===
       // DragStart: Only start if idle
+      // Also ignore if mouse_blocked (synthesized event after touch)
+      DragStart(_, _, _), Idle if model.mouse_blocked -> {
+        // Consume the synthesized mousedown, clear the block
+        #(Model(..model, mouse_blocked: False), list)
+      }
       DragStart(drag_index, drag_element_id, position), Idle -> {
         let new_state =
           State(
@@ -599,6 +609,11 @@ fn system_update(
       }
 
       // === TOUCH MESSAGES ===
+      // TouchStart during pending: second finger added (pinch), cancel
+      TouchStart(_, _, _), TouchPending(_) -> {
+        #(Model(..model, interaction: Idle), list)
+      }
+
       // TouchStart: Begin pending state, waiting for hold duration
       TouchStart(index, id, position), Idle -> {
         // If hold duration is 0, we'll enter selection on TouchEnd (immediate mode)
@@ -617,6 +632,8 @@ fn system_update(
           Model(
             interaction: TouchPending(pending_state),
             touch_generation: new_gen,
+            // Block synthesized mouse events until we see one
+            mouse_blocked: True,
           ),
           list,
         )
@@ -658,6 +675,7 @@ fn system_update(
         let new_gen = model.touch_generation + 1
         #(
           Model(
+            ..model,
             interaction: TouchSelecting(touch_state),
             touch_generation: new_gen,
           ),
@@ -707,6 +725,7 @@ fn system_update(
                 let new_gen = model.touch_generation + 1
                 #(
                   Model(
+                    ..model,
                     interaction: TouchSelecting(touch_state),
                     touch_generation: new_gen,
                   ),
@@ -768,6 +787,7 @@ fn system_update(
                 let new_gen = model.touch_generation + 1
                 #(
                   Model(
+                    ..model,
                     interaction: TouchSelecting(updated_touch_state),
                     touch_generation: new_gen,
                   ),
@@ -793,6 +813,7 @@ fn system_update(
         let new_gen = model.touch_generation + 1
         #(
           Model(
+            ..model,
             interaction: TouchSelecting(touch_state),
             touch_generation: new_gen,
           ),
@@ -1350,16 +1371,12 @@ fn touch_grip_events(
 ) -> fn(Int, String) -> List(Attribute(msg)) {
   fn(index: Int, element_id: String) -> List(Attribute(msg)) {
     [
-      // touchstart with preventDefault to stop mousedown synthesis
-      event.advanced("touchstart", {
+      // touchstart - no preventDefault to allow scrolling during hold
+      event.on("touchstart", {
         use position <- decode.then(decode_touch_position())
-        decode.success(event.handler(
-          dispatch: step_msg(TouchStart(index, element_id, position)),
-          prevent_default: True,
-          stop_propagation: False,
-        ))
+        decode.success(step_msg(TouchStart(index, element_id, position)))
       }),
-      // touchmove - track movement to detect scrolling (no preventDefault to allow scrolling)
+      // touchmove - track movement to detect scrolling
       event.on("touchmove", {
         use position <- decode.then(decode_touch_position())
         decode.success(step_msg(TouchMove(position)))

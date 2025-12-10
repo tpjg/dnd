@@ -251,6 +251,8 @@ fn item_view(
             attribute.class(base_class <> selected_class),
             attribute.style("user-select", "none"),
             attribute.style("-webkit-user-select", "none"),
+            // Allow scroll/pan but prevent iOS mouse event synthesis
+            attribute.style("touch-action", "manipulation"),
           ],
           // Pop animation when touch-selected
           system.touch_selected_styles(dnd_model, index),
