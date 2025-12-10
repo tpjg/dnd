@@ -1,9 +1,11 @@
 import dnd
 import gleam/dynamic/decode
 import gleam/float
+import gleam/int
 import gleam/javascript/promise
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import lustre/attribute.{type Attribute}
 import lustre/effect.{type Effect}
 import lustre/event
@@ -150,6 +152,7 @@ pub type GroupsConfig(a) {
 /// - `groups`: Configuration for cross-group operations (see GroupsConfig)
 /// - `mode`: Input mode for the system (MouseOnly, TouchOnly, or Auto). Default: MouseOnly
 /// - `touch_timeout_ms`: Milliseconds before touch selection auto-cancels. Default: 5000. Set to 0 to disable.
+/// - `touch_scroll_threshold`: Distance in pixels to distinguish tap from scroll. Default: 10.
 ///
 /// ## Behavior
 ///
@@ -174,6 +177,7 @@ pub type GroupsConfig(a) {
 ///   ),
 ///   mode: groups.MouseOnly,
 ///   touch_timeout_ms: 5000,
+///   touch_scroll_threshold: 10,
 /// )
 /// ```
 pub type Config(a) {
@@ -185,6 +189,7 @@ pub type Config(a) {
     groups: GroupsConfig(a),
     mode: InputMode,
     touch_timeout_ms: Int,
+    touch_scroll_threshold: Int,
   )
 }
 
@@ -201,14 +206,26 @@ pub type State {
 }
 
 /// Touch selection state for the two-tap pattern.
+/// The scroll_start field tracks when user begins a potential scroll gesture
+/// while in selection mode, allowing us to reset the timeout on scroll.
 pub type TouchState {
-  TouchState(selected_index: Int, selected_id: String)
+  TouchState(
+    selected_index: Int,
+    selected_id: String,
+    scroll_start: Option(Position),
+  )
+}
+
+/// Touch pending state - awaiting touchend to determine if tap or scroll.
+pub type TouchPendingState {
+  TouchPendingState(index: Int, element_id: String, start_position: Position)
 }
 
 /// Interaction state - tracks whether we're idle, mouse dragging, or touch selecting.
 pub type InteractionState {
   Idle
   MouseDragging(State)
+  TouchPending(TouchPendingState)
   TouchSelecting(TouchState)
 }
 
@@ -329,7 +346,8 @@ pub type System(a, msg) {
     ghost_styles: fn(Model) -> List(Attribute(msg)),
     info: fn(Model) -> Option(Info),
     // New (touch support)
-    update_with_effect: fn(DndMsg, Model, List(a)) -> #(Model, List(a), Effect(msg)),
+    update_with_effect: fn(DndMsg, Model, List(a)) ->
+      #(Model, List(a), Effect(msg)),
     touch_grip_events: fn(Int, String) -> List(Attribute(msg)),
     touch_drop_zone_events: fn(Int) -> List(Attribute(msg)),
     cancel_events: fn() -> List(Attribute(msg)),
@@ -347,6 +365,8 @@ pub type DndMsg {
   DragLeave
   DragEnd
   // Touch messages
+  TouchStart(Int, String, Position)
+  TouchEnd(Position)
   TouchSelect(Int, String)
   TouchDrop(Int)
   TouchCancel
@@ -381,7 +401,6 @@ fn system_update(
   fn(msg: DndMsg, model: Model, list: List(a)) -> #(Model, List(a)) {
     case msg, model.interaction {
       // === MOUSE MESSAGES ===
-
       // DragStart: Only start if idle
       DragStart(drag_index, drag_element_id, position), Idle -> {
         let new_state =
@@ -449,7 +468,11 @@ fn system_update(
                   )
                 #(
                   Model(..model, interaction: MouseDragging(updated_state)),
-                  config.before_update(state.drag_index, drop_index, updated_list),
+                  config.before_update(
+                    state.drag_index,
+                    drop_index,
+                    updated_list,
+                  ),
                 )
               }
               // Different group operations
@@ -471,13 +494,20 @@ fn system_update(
                   )
                 #(
                   Model(..model, interaction: MouseDragging(updated_state)),
-                  config.before_update(state.drag_index, drop_index, updated_list),
+                  config.before_update(
+                    state.drag_index,
+                    drop_index,
+                    updated_list,
+                  ),
                 )
               }
               // Reset drag counter for other cases
               _, _, _ -> {
                 let updated_state = State(..state, drag_counter: 0)
-                #(Model(..model, interaction: MouseDragging(updated_state)), list)
+                #(
+                  Model(..model, interaction: MouseDragging(updated_state)),
+                  list,
+                )
               }
             }
           }
@@ -551,14 +581,111 @@ fn system_update(
       }
 
       // === TOUCH MESSAGES ===
+      // TouchStart: Begin pending state, waiting for touchend to determine tap vs scroll
+      TouchStart(index, id, position), Idle -> {
+        let pending_state =
+          TouchPendingState(
+            index: index,
+            element_id: id,
+            start_position: position,
+          )
+        #(Model(..model, interaction: TouchPending(pending_state)), list)
+      }
 
-      // TouchSelect: Only start if idle
-      // Increment generation so old timeouts are ignored
+      // TouchEnd: Check distance from start - if within threshold, it's a tap (select)
+      TouchEnd(end_position), TouchPending(pending) -> {
+        case
+          is_within_threshold(
+            pending.start_position,
+            end_position,
+            config.touch_scroll_threshold,
+          )
+        {
+          True -> {
+            // Distance is small - treat as a tap, enter selection mode
+            let touch_state =
+              TouchState(
+                selected_index: pending.index,
+                selected_id: pending.element_id,
+                scroll_start: None,
+              )
+            let new_gen = model.touch_generation + 1
+            #(
+              Model(
+                interaction: TouchSelecting(touch_state),
+                touch_generation: new_gen,
+              ),
+              list,
+            )
+          }
+          False -> {
+            // Distance is large - user was scrolling, cancel
+            #(Model(..model, interaction: Idle), list)
+          }
+        }
+      }
+
+      // TouchStart while selecting: track position for scroll detection
+      // If user scrolls while selecting, we'll reset the timeout
+      TouchStart(_, _, position), TouchSelecting(touch_state) -> {
+        let updated_touch_state =
+          TouchState(..touch_state, scroll_start: Some(position))
+        #(
+          Model(..model, interaction: TouchSelecting(updated_touch_state)),
+          list,
+        )
+      }
+
+      // TouchEnd while selecting: check if it was a scroll gesture
+      // If scroll distance is large, reset the timer by incrementing generation
+      TouchEnd(end_position), TouchSelecting(touch_state) -> {
+        case touch_state.scroll_start {
+          Some(start_pos) -> {
+            case
+              is_within_threshold(
+                start_pos,
+                end_position,
+                config.touch_scroll_threshold,
+              )
+            {
+              True -> {
+                // Small distance - user tapped, clear scroll_start
+                let updated_touch_state =
+                  TouchState(..touch_state, scroll_start: None)
+                #(
+                  Model(..model, interaction: TouchSelecting(updated_touch_state)),
+                  list,
+                )
+              }
+              False -> {
+                // Large distance - user scrolled, reset timer by incrementing generation
+                let updated_touch_state =
+                  TouchState(..touch_state, scroll_start: None)
+                let new_gen = model.touch_generation + 1
+                #(
+                  Model(
+                    interaction: TouchSelecting(updated_touch_state),
+                    touch_generation: new_gen,
+                  ),
+                  list,
+                )
+              }
+            }
+          }
+          None -> #(model, list)
+        }
+      }
+
+      // TouchSelect: Direct selection (backwards compatibility / programmatic use)
       TouchSelect(index, id), Idle -> {
-        let touch_state = TouchState(selected_index: index, selected_id: id)
+        let touch_state =
+          TouchState(selected_index: index, selected_id: id, scroll_start: None)
         let new_gen = model.touch_generation + 1
         #(
-          Model(interaction: TouchSelecting(touch_state), touch_generation: new_gen),
+          Model(
+            interaction: TouchSelecting(touch_state),
+            touch_generation: new_gen,
+          ),
           list,
         )
       }
@@ -621,23 +748,52 @@ fn system_update(
         }
       }
 
-      // TouchCancel: Only process if touch selecting
-      TouchCancel, TouchSelecting(_) -> #(Model(..model, interaction: Idle), list)
+      // TouchCancel: Process if touch pending or selecting
+      TouchCancel, TouchPending(_) -> #(Model(..model, interaction: Idle), list)
+      TouchCancel, TouchSelecting(_) -> #(
+        Model(..model, interaction: Idle),
+        list,
+      )
 
       // TouchTimeout: Only process if generation matches current
-      TouchTimeout(gen), TouchSelecting(_) if gen == model.touch_generation ->
-        #(Model(..model, interaction: Idle), list)
+      TouchTimeout(gen), TouchSelecting(_) if gen == model.touch_generation -> #(
+        Model(..model, interaction: Idle),
+        list,
+      )
 
       // Stale timeout (generation mismatch) - ignore
       TouchTimeout(_), _ -> #(model, list)
 
       // === CROSS-MODE INTERACTIONS ===
-
       // Touch events cancel mouse dragging
-      TouchSelect(_, _), MouseDragging(_) ->
-        #(Model(..model, interaction: Idle), list)
-      TouchDrop(_), MouseDragging(_) -> #(Model(..model, interaction: Idle), list)
-      TouchCancel, MouseDragging(_) -> #(Model(..model, interaction: Idle), list)
+      TouchStart(_, _, _), MouseDragging(_) -> #(
+        Model(..model, interaction: Idle),
+        list,
+      )
+      TouchEnd(_), MouseDragging(_) -> #(
+        Model(..model, interaction: Idle),
+        list,
+      )
+      TouchSelect(_, _), MouseDragging(_) -> #(
+        Model(..model, interaction: Idle),
+        list,
+      )
+      TouchDrop(_), MouseDragging(_) -> #(
+        Model(..model, interaction: Idle),
+        list,
+      )
+      TouchCancel, MouseDragging(_) -> #(
+        Model(..model, interaction: Idle),
+        list,
+      )
+
+      // Mouse events are ignored during touch pending
+      DragStart(_, _, _), TouchPending(_) -> #(model, list)
+      Drag(_), TouchPending(_) -> #(model, list)
+      DragOver(_, _), TouchPending(_) -> #(model, list)
+      DragEnter(_), TouchPending(_) -> #(model, list)
+      DragLeave, TouchPending(_) -> #(model, list)
+      DragEnd, TouchPending(_) -> #(model, list)
 
       // Mouse events are ignored during touch selecting
       DragStart(_, _, _), TouchSelecting(_) -> #(model, list)
@@ -663,11 +819,22 @@ fn system_update_with_effect(
   fn(msg: DndMsg, model: Model, list: List(a)) -> #(Model, List(a), Effect(msg)) {
     let #(new_model, new_list) = base_update(msg, model, list)
 
-    // Pass the generation so stale timeouts are ignored
-    let eff = case msg, new_model.interaction, config.touch_timeout_ms {
-      TouchSelect(_, _), TouchSelecting(_), timeout_ms if timeout_ms > 0 ->
-        schedule_timeout(timeout_ms, new_model.touch_generation, step_msg)
-      _, _, _ -> effect.none()
+    // Schedule timeout effect when:
+    // 1. Entering touch selection mode (TouchEnd from pending, or direct TouchSelect)
+    // 2. Generation changed while in TouchSelecting (scroll detected, timer reset)
+    // The generation check handles both cases: initial entry increments generation,
+    // and scroll detection also increments it
+    let should_schedule =
+      config.touch_timeout_ms > 0
+      && new_model.touch_generation != model.touch_generation
+    let eff = case new_model.interaction, should_schedule {
+      TouchSelecting(_), True ->
+        schedule_timeout(
+          config.touch_timeout_ms,
+          new_model.touch_generation,
+          step_msg,
+        )
+      _, _ -> effect.none()
     }
 
     #(new_model, new_list, eff)
@@ -955,15 +1122,29 @@ fn drop_events(
 
 // TOUCH EVENT HANDLERS --------------------------------------------------------
 
+/// Decoder for touch position from touch events.
+/// Extracts clientX/clientY from the first touch in changedTouches.
+fn decode_touch_position() -> decode.Decoder(Position) {
+  use x <- decode.subfield(["changedTouches", "0", "clientX"], decode.float)
+  use y <- decode.subfield(["changedTouches", "0", "clientY"], decode.float)
+  decode.success(Position(x, y))
+}
+
+/// Touch grip events - touchstart captures position, touchend validates tap vs scroll.
+/// Apply to the grip handle or the entire draggable item.
 fn touch_grip_events(
   step_msg: fn(DndMsg) -> msg,
 ) -> fn(Int, String) -> List(Attribute(msg)) {
   fn(index: Int, element_id: String) -> List(Attribute(msg)) {
     [
-      event.on(
-        "touchend",
-        decode.success(step_msg(TouchSelect(index, element_id))),
-      ),
+      event.on("touchstart", {
+        use position <- decode.then(decode_touch_position())
+        decode.success(step_msg(TouchStart(index, element_id, position)))
+      }),
+      event.on("touchend", {
+        use position <- decode.then(decode_touch_position())
+        decode.success(step_msg(TouchEnd(position)))
+      }),
     ]
   }
 }
@@ -1031,6 +1212,8 @@ fn ghost_styles(movement: Movement) -> fn(Model) -> List(Attribute(msg)) {
 
         list.append(essential_styles, position_styles)
       }
+      // No ghost for touch mode or idle state
+      TouchPending(_) -> []
       TouchSelecting(_) -> []
       Idle -> []
     }
@@ -1051,6 +1234,7 @@ fn get_info(model: Model) -> Option(Info) {
         current_position: state.current_position,
       ))
     }
+    TouchPending(_) -> None
     TouchSelecting(_) -> None
     Idle -> None
   }
@@ -1070,4 +1254,19 @@ pub fn get_selected_index(model: Model) -> Option(Int) {
     TouchSelecting(touch_state) -> Some(touch_state.selected_index)
     _ -> None
   }
+}
+
+// DISTANCE HELPERS ------------------------------------------------------------
+
+/// Calculate the distance between two positions.
+fn distance(p1: Position, p2: Position) -> Float {
+  let dx = p2.x -. p1.x
+  let dy = p2.y -. p1.y
+  float.square_root(dx *. dx +. dy *. dy)
+  |> result.unwrap(0.0)
+}
+
+/// Check if the distance between two positions is within a threshold.
+fn is_within_threshold(p1: Position, p2: Position, threshold: Int) -> Bool {
+  distance(p1, p2) <. int.to_float(threshold)
 }

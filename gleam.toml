@@ -1,5 +1,5 @@
 name = "dnd"
-version = "2.0.0"
+version = "2.0.1"
 
 # Target specifies the target platform for the project. running this in a browser.
 target = "javascript"

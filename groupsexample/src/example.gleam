@@ -83,6 +83,8 @@ fn init(_flags) -> #(Model, Effect(Msg)) {
       mode: groups.Auto,
       // Auto-cancel touch selection after 5 seconds
       touch_timeout_ms: 5000,
+      // Distance threshold in pixels to distinguish tap from scroll
+      touch_scroll_threshold: 10,
     )
 
   let system = groups.create(config, DndMsg)

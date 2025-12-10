@@ -161,8 +161,17 @@ fn init(_flags) -> Model {
 The library supports touch devices using a two-tap selection pattern that doesn't interfere with scrolling:
 
 1. **Tap an item** to select it (item highlights, drop zones appear)
-2. **Tap a drop zone** to move the selected item there
-3. Selection auto-cancels after a configurable timeout (default 5 seconds)
+2. **Scroll freely** to find the drop zone (timer resets on scroll)
+3. **Tap a drop zone** to move the selected item there
+4. Selection auto-cancels after a configurable timeout (default 5 seconds)
+
+### Scroll Detection
+
+The library intelligently distinguishes between taps and scroll gestures using a distance threshold:
+- If you move less than `touch_scroll_threshold` pixels between touchstart and touchend, it's a tap
+- If you move more, it's a scroll gesture and the selection timer resets
+
+This means you can select an item and then scroll through a long list to find where to drop it without worrying about the timeout.
 
 ### Enabling Touch Support
 
@@ -179,6 +188,8 @@ fn init(_flags) -> #(Model, Effect(Msg)) {
     mode: dnd.Auto,
     // Auto-cancel after 5 seconds (0 to disable)
     touch_timeout_ms: 5000,
+    // Distance threshold to distinguish tap from scroll (default 10px)
+    touch_scroll_threshold: 10,
   )
 
   let system = dnd.create(config, DndMsg)
