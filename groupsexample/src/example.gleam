@@ -85,6 +85,10 @@ fn init(_flags) -> #(Model, Effect(Msg)) {
       touch_timeout_ms: 5000,
       // Distance threshold in pixels to distinguish tap from scroll
       touch_scroll_threshold: 10,
+      // Minimum hold duration in ms before touch selection activates
+      touch_hold_duration_ms: 200,
+      // Cooldown in ms after pop before drops are accepted
+      touch_drop_cooldown_ms: 500,
     )
 
   let system = groups.create(config, DndMsg)
@@ -458,6 +462,8 @@ fn item_view(
                 attribute.style("user-select", "none"),
                 attribute.style("-webkit-user-select", "none"),
               ],
+              // Pop animation when touch-selected
+              model.system.touch_selected_styles(dnd_model, global_index),
               // Mouse drag events (ignored during touch selection)
               case is_selecting {
                 True -> []

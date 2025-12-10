@@ -158,20 +158,20 @@ fn init(_flags) -> Model {
 
 ## Touch Support
 
-The library supports touch devices using a two-tap selection pattern that doesn't interfere with scrolling:
+The library supports touch devices using a hold-to-select pattern that doesn't interfere with scrolling:
 
-1. **Tap an item** to select it (item highlights, drop zones appear)
-2. **Scroll freely** to find the drop zone (timer resets on scroll)
-3. **Tap a drop zone** to move the selected item there
-4. Selection auto-cancels after a configurable timeout (default 5 seconds)
+1. **Hold an item** for 200ms to select it (item "pops" with animation, drop zones appear)
+2. **Release your finger** - the item stays selected
+3. **Scroll freely** to find the drop zone (scroll gestures are detected and ignored)
+4. **Tap a drop zone** to move the selected item there
+5. Selection auto-cancels after a configurable timeout (default 5 seconds)
 
-### Scroll Detection
+### Touch UX Features
 
-The library intelligently distinguishes between taps and scroll gestures using a distance threshold:
-- If you move less than `touch_scroll_threshold` pixels between touchstart and touchend, it's a tap
-- If you move more, it's a scroll gesture and the selection timer resets
-
-This means you can select an item and then scroll through a long list to find where to drop it without worrying about the timeout.
+- **Hold duration**: Prevents accidental selection when quickly tapping (configurable, default 200ms)
+- **Pop animation**: Visual feedback when selection activates (requires CSS keyframe)
+- **Drop cooldown**: After the "pop", drops are ignored for 500ms to prevent accidental drops when the layout shifts
+- **Scroll detection**: Both items and drop zones distinguish taps from scroll gestures
 
 ### Enabling Touch Support
 
@@ -190,6 +190,10 @@ fn init(_flags) -> #(Model, Effect(Msg)) {
     touch_timeout_ms: 5000,
     // Distance threshold to distinguish tap from scroll (default 10px)
     touch_scroll_threshold: 10,
+    // Hold duration before selection activates (default 200ms, 0 for immediate)
+    touch_hold_duration_ms: 200,
+    // Cooldown after pop before drops are accepted (default 500ms)
+    touch_drop_cooldown_ms: 500,
   )
 
   let system = dnd.create(config, DndMsg)
@@ -206,6 +210,16 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
       #(Model(system: updated_system, items: new_items), dnd_effect)
     }
   }
+}
+```
+
+### Pop Animation CSS
+
+Add this keyframe to your CSS for the pop animation:
+
+```css
+@keyframes dnd-pop {
+    50% { transform: scale(1.05); }
 }
 ```
 
@@ -229,13 +243,16 @@ fn view(model: Model) -> Element(Msg) {
 }
 
 fn item_view(item, index, system) -> Element(Msg) {
+  let item_id = "item-" <> int.to_string(index)
   html.div(
     list.flatten([
-      [attribute.id("item-" <> int.to_string(index))],
+      [attribute.id(item_id)],
       // Mouse drag events
-      system.drag_events(index, "item-" <> int.to_string(index)),
-      // Touch grip events (tap to select)
-      system.touch_grip_events(index, "item-" <> int.to_string(index)),
+      system.drag_events(index, item_id),
+      // Touch grip events (hold to select)
+      system.touch_grip_events(index, item_id),
+      // Pop animation styles for selected item
+      system.touch_selected_styles(system.model, index),
     ]),
     [html.text(item)]
   )

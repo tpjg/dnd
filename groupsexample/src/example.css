@@ -7,3 +7,10 @@
         "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol",
         "Noto Color Emoji";
 }
+
+/* Pop animation for touch selection feedback */
+@keyframes dnd-pop {
+    50% {
+        transform: scale(1.2);
+    }
+}
