@@ -1,8 +1,6 @@
 name = "dnd"
-version = "2.1.1"
+version = "2.1.2"
 
-# Target specifies the target platform for the project. running this in a browser.
-target = "javascript"
 
 # Fill out these fields if you intend to generate HTML documentation or publish
 # your project to the Hex package manager.
@@ -17,7 +15,6 @@ links = [{ title = "Issues", href = "https://todo.sr.ht/~tpjg/dnd" }]
 
 [dependencies]
 gleam_stdlib = ">= 0.44.0 and < 2.0.0"
-gleam_javascript = ">= 0.12.0 and < 2.0.0"
 lustre = ">= 5.2.1 and < 6.0.0"
 
 [dev-dependencies]

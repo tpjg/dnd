@@ -1,7 +1,6 @@
 import gleam/dynamic/decode
 import gleam/float
 import gleam/int
-import gleam/javascript/promise
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -907,44 +906,45 @@ fn system_update_with_effect(
   }
 }
 
-// Schedule hold duration timer for touch selection
+@external(erlang, "timer_ffi", "set_timeout")
+@external(javascript, "./dnd/timer_ffi.mjs", "set_timeout")
+fn set_timeout(_ms: Int, _callback: fn() -> Nil) -> Nil {
+  Nil
+}
+
 fn schedule_hold_duration(
   duration_ms: Int,
   generation: Int,
   step_msg: fn(DndMsg) -> msg,
 ) -> Effect(msg) {
   effect.from(fn(dispatch) {
-    promise.wait(duration_ms)
-    |> promise.tap(fn(_) { dispatch(step_msg(TouchDurationMet(generation))) })
-    Nil
+    set_timeout(duration_ms, fn() {
+      dispatch(step_msg(TouchDurationMet(generation)))
+    })
   })
 }
 
-// Schedule drop cooldown timer - enables drops after layout settles
 fn schedule_drop_cooldown(
   cooldown_ms: Int,
   generation: Int,
   step_msg: fn(DndMsg) -> msg,
 ) -> Effect(msg) {
   effect.from(fn(dispatch) {
-    promise.wait(cooldown_ms)
-    |> promise.tap(fn(_) {
+    set_timeout(cooldown_ms, fn() {
       dispatch(step_msg(TouchDropCooldownComplete(generation)))
     })
-    Nil
   })
 }
 
-// Schedule timeout for touch auto-cancel
 fn schedule_timeout(
   timeout_ms: Int,
   generation: Int,
   step_msg: fn(DndMsg) -> msg,
 ) -> Effect(msg) {
   effect.from(fn(dispatch) {
-    promise.wait(timeout_ms)
-    |> promise.tap(fn(_) { dispatch(step_msg(TouchTimeout(generation))) })
-    Nil
+    set_timeout(timeout_ms, fn() {
+      dispatch(step_msg(TouchTimeout(generation)))
+    })
   })
 }
 
