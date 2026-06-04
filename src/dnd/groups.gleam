@@ -1386,6 +1386,10 @@ fn touch_grip_events(
         use position <- decode.then(decode_touch_position())
         decode.success(step_msg(TouchEnd(position)))
       }),
+      // touchcancel - iOS/system aborts the touch (scroll handoff, incoming
+      // notification, system gesture). Reset now instead of waiting for
+      // touch_timeout_ms, otherwise the item stays stuck in selecting mode.
+      event.on("touchcancel", decode.success(step_msg(TouchCancel))),
     ]
   }
 }
@@ -1410,7 +1414,9 @@ fn touch_drop_zone_events(
 }
 
 /// Cancel events - currently returns empty list.
-/// Touch cancellation is handled via timeout (touch_timeout_ms config).
+/// Browser-initiated cancellation is handled by the `touchcancel` listener in
+/// `touch_grip_events`; `touch_timeout_ms` remains a backstop. This hook is for
+/// an optional explicit cancel affordance (e.g. a button) that sends TouchCancel.
 fn cancel_events(_step_msg: fn(DndMsg) -> msg) -> fn() -> List(Attribute(msg)) {
   fn() -> List(Attribute(msg)) { [] }
 }
